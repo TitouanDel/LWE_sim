@@ -181,10 +181,16 @@ print(f'Introduced WF: {WFE_0:.2f}, WFE: {d_WFE:.2f} [nm RMS]')
 
 plt.title('LIFT(20) WF coefs estimation (noisy)')
 index = np.arange(len(coefs_LO))
-bar_width = 0.35
-plt.bar(npy(index), npy(coefs_LO)*1e9, bar_width, label='Random LO coefs')
-plt.bar(npy(index+bar_width), npy(coefs_LIFT)*1e9, bar_width, label='Estimated coefs', color='red')
-plt.plot(npy(x), npy(LO_distribution)*1e9, label='STD per mode', color='gray')
+bar_width = 0.35 
+
+coefs_LO_group1 = npy(coefs_LO[:10]) * 1e9
+coefs_LO_group2 = npy(coefs_LO[10:]) * 1e9
+
+plt.bar(index[:10], coefs_LO_group1, bar_width, label='Random LO coefs')
+plt.bar(index[10:], coefs_LO_group2, bar_width, label='Random petal modes coefs', color='green')
+
+plt.bar(index + bar_width, npy(coefs_LIFT) * 1e9, bar_width, label='Estimated coefs', color='red')
+plt.plot(npy(x), npy(LO_distribution) * 1e9, label='STD per mode', color='gray')
 
 plt.xticks(x.get())
 plt.xlim(0, N_modes_simulated-1)
@@ -212,7 +218,8 @@ plt.show()
 sys.path.append('../../DIP')
 from DIP.DIP import DIP
 from DIP.utils import EarlyStopping
-
+from scipy.ndimage import median_filter
+from torch import nn, optim
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -223,8 +230,6 @@ dip.modal_basis = torch.tensor(Z_basis.modesFullRes, dtype=torch.float32, device
 PSF_torch = torch.tensor(PSF_sim/PSF_sim.sum()).float().to(device).unsqueeze(0)
 
 #%%DIP test
-from scipy.ndimage import median_filter
-from torch import nn, optim
 inv_R_n_torch = median_filter(1.0 / R_n.get(), 4) + 1.0
 inv_R_n_torch = torch.tensor(inv_R_n_torch).float().to(device).unsqueeze(0)
 
@@ -302,18 +307,20 @@ plt.show()
 print(f'Introduced WF: {WFE_0:.2f}, WFE: {d_WFE:.2f} [nm RMS]')
 
 plt.title('DIP WF coefs estimation (noisy)')
-index = np.arange(22)
-bar_width = 0.35
-plt.bar(npy(index), npy(coefs_LO)*1e9, bar_width, label='Random LO coefs')
-plt.bar(npy(index+bar_width), npy(coefs_DIP_defocus), bar_width, label='Estimated coefs', color='red')
-plt.plot(npy(x), npy(LO_distribution)*1e9, label='STD per mode', color='gray')
+
+plt.bar(index[:10], coefs_LO_group1, bar_width, label='Random LO coefs')
+plt.bar(index[10:], coefs_LO_group2, bar_width, label='Random petal modes coefs', color='green')
+
+plt.bar(index + bar_width, npy(coefs_DIP_defocus), bar_width, label='Estimated coefs', color='red')
+plt.plot(npy(x), npy(LO_distribution) * 1e9, label='STD per mode', color='gray')
 
 plt.xticks(x.get())
-plt.xlim(0, N_modes_simulated)
+plt.xlim(0, N_modes_simulated-1)
 plt.grid()
 plt.legend()
 plt.ylabel('Coefficient value [nm RMS]')
 plt.xlabel('Mode number')
+plt.xlim(0, 22)
 plt.show()
 
 mse = np.mean((npy(coefs_LO)*1e9 - npy(coefs_DIP_defocus)) ** 2)
