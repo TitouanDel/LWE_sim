@@ -1,4 +1,4 @@
-#%%
+#%% Imports
 import sys
 sys.path.append('..')
 sys.path.append('../..')
@@ -18,6 +18,14 @@ from LIFT.modules.Zernike import Zernike
 from LIFT.modules.LIFT import LIFT
 from VLT_pupil import CircPupil, PupilVLT
 from initialize_VLT import GenerateVLT
+
+def npy(x):
+    if isinstance(x, cp.ndarray):
+        return x.get()
+    elif isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    else:
+        return x
 #%% Initializing optical system
 samples = 200
 
@@ -39,7 +47,7 @@ for i, ax in enumerate(axes.flat):
 plt.tight_layout()
 plt.show()
 
-vlt = GenerateVLT(img_resolution=41, pupil=vlt_pupil, source_spectrum= [('H', 15.5)], f=8*64, reflectivity=0.385, sampling_time=0.1/20.0, num_samples=10*20, gpu=True)
+vlt = GenerateVLT(img_resolution=41, pupil=vlt_pupil, source_spectrum= [('H', 15)], f=8*64, reflectivity=0.385, sampling_time=0.1/20.0, num_samples=10*20, gpu=True)
 
 #%% Initialize modal basis
 
@@ -52,25 +60,21 @@ Z_basis.nModes += 12
 astig_shift = 200e-9 #[m]
 astig_diversity = Z_basis.Mode(4) * astig_shift
 
+def GenerateWF(coefs, diversity=0.0):
+    return (Z_basis.wavefrontFromModes(vlt, coefs)+ diversity) * 1e9 # [nm]
 #%% Generating PSF
 LO_dist_law = lambda x, A, B, C: A / cp.exp(B*cp.abs(x)) + C
 N_modes_simulated = Z_basis.nModes
 x = cp.arange(N_modes_simulated)
-LO_distribution = LO_dist_law(x, *[70, 0.2, 10])*0
-LO_distribution[2:10] = 50
+LO_distribution = LO_dist_law(x, *[70, 0.2, 10])
+LO_distribution[[0,1,10]] = 0
 coeff_std = 100
 LO_distribution[11:22] = coeff_std
 LO_distribution *= 1e-9 # [nm] -> [m]
 
 coefs_LO = cp.random.normal(0, LO_distribution, N_modes_simulated)
+coefs_LO = cp.clip(coefs_LO, -500e-9, 500e-9)
 
-def npy(x):
-    if isinstance(x, cp.ndarray):
-        return x.get()
-    elif isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    else:
-        return x
 
 plt.title('Simulated LO coefficients')
 
@@ -100,7 +104,7 @@ R_n = PSF_noisy_DITs.var(axis=2)    # LIFT flux-weighting matrix
 PSF_data = PSF_noisy_DITs.mean(axis=2) # input PSF
 PSF_data = cp.array(PSF_data)
 R_n = cp.array(R_n)
-#%%
+
 fig, ax = plt.subplots(1, 3, figsize=(10, 5))
 ax[0].set_title('Simulated noiseless PSF')
 ax[1].set_title('Simulated noisy PSF (DITs avg.)')
@@ -115,11 +119,13 @@ else:
     ax[2].imshow(R_n)
 plt.show()
 
+
+
 #%% LIFT
-estimator = LIFT(vlt, Z_basis, astig_diversity, 20)
+estimator = LIFT(vlt, Z_basis, astig_diversity, 30)
 
 #Choice of PSF to estimate : noiseless or data
-PSF_sim = PSF_data
+PSF_sim = PSF_noiseless
 
 modes_LIFT = [2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # Selected Zernike modal coefficients
 # Note! Sometime, for ML-estimation it is better to exlude an order coincding with the diversity term (e.g. 4th order in this case) to reduce the cross coupling between modes
@@ -129,10 +135,6 @@ coefs_var  = LO_distribution**2 # Initial guess for the variance of the modal co
 
 #coefs_LIFT,  PSF_LIFT, _  = estimator.Reconstruct(PSF_sim, R_n=None, mode_ids=modes_LIFT, optimize_norm='sum')
 coefs_LIFT,  PSF_LIFT, _  = estimator.Reconstruct(PSF_sim, R_n=R_n, mode_ids=modes_LIFT, optimize_norm='sum')
-
-
-def GenerateWF(coefs, diversity=0.0):
-    return (Z_basis.wavefrontFromModes(vlt, coefs)+ diversity) * 1e9 # [nm]
 
 calc_WFE = lambda WF: np.std(WF[vlt_pupil == 1]) if not hasattr(WF, 'get') else cp.std(WF[vlt_pupil == 1])
 
@@ -147,7 +149,7 @@ if hasattr(PSF_LIFT, 'device'): PSF_LIFT = PSF_LIFT.get()
 d_WF  = WF_0 - WF_LIFT
 d_WFE = calc_WFE(d_WF)
 WFE_0 = calc_WFE(WF_0)
-
+PV = np.round(np.max(WF_0) - np.min(WF_0))
 c_lim = np.max([np.max(np.abs(WF_0)), np.max(np.abs(WF_LIFT)), np.max(np.abs(d_WF))])
 
 # Compare PSFs
@@ -177,7 +179,7 @@ fig.colorbar(ax[2].imshow(d_WF, vmin=-c_lim, vmax=c_lim, cmap='seismic'), cax=ca
 cax.set_ylabel('[nm RMS]')
 plt.show()
 
-print(f'Introduced WF: {WFE_0:.2f}, WFE: {d_WFE:.2f} [nm RMS]')
+print(f'Introduced WF: {WFE_0:.2f}, WFE: {d_WFE:.2f}, PV:{int(PV)} [nm RMS]')
 
 plt.title('LIFT(20) WF coefs estimation (noisy)')
 index = np.arange(len(coefs_LO))
@@ -201,19 +203,6 @@ plt.xlabel('Mode number')
 plt.xlim(0, 22)
 plt.show()
 
-# LWE_coeff_std.append(coeff_std)
-# LWE_WFE_noiseless.append(d_WFE)
-
-# %%
-# plt.plot(LWE_coeff_std, LWE_WFE_noiseless, marker='o', linestyle='-')
-# plt.xlabel('LWE_coeff_std (nm)')
-# plt.ylabel('LWE_WFE_noiseless (nm)')
-# plt.grid(True)
-# plt.ylim(0.4, 1)
-# plt.title('LIFT(20) error on WF estimation (noiseless)')
-
-# plt.show()
-
 #%%DIP imports
 sys.path.append('../../DIP')
 from DIP.DIP import DIP
@@ -227,9 +216,10 @@ dip = DIP(vlt, device, 'sum')
 dip.diversity   = torch.atleast_3d(torch.tensor(astig_diversity)*1e9).to(device)
 dip.modal_basis = torch.tensor(Z_basis.modesFullRes, dtype=torch.float32, device=device)
 
-PSF_torch = torch.tensor(PSF_sim/PSF_sim.sum()).float().to(device).unsqueeze(0)
 
 #%%DIP test
+PSF_torch = torch.tensor(PSF_sim/PSF_sim.sum()).float().to(device).unsqueeze(0)
+
 inv_R_n_torch = median_filter(1.0 / R_n.get(), 4) + 1.0
 inv_R_n_torch = torch.tensor(inv_R_n_torch).float().to(device).unsqueeze(0)
 
@@ -246,7 +236,7 @@ def coefs2WF(coefs):
 coefs_DIP_defocus = torch.zeros(num_modes_DIP, requires_grad=True, device=device)
 
 loss_fn = nn.L1Loss(reduction='sum')
-early_stopping = EarlyStopping(patience=10, tolerance=0.0001, relative=False)
+early_stopping = EarlyStopping(patience=5, tolerance=0.00001, relative=False)
 optimizer = optim.LBFGS([coefs_DIP_defocus], history_size=20, max_iter=5, line_search_fn="strong_wolfe")    
 
 def criterion():
@@ -274,6 +264,8 @@ with torch.no_grad():
 
 for pos in [0, 1, 10]:
     coefs_DIP_defocus = torch.cat((coefs_DIP_defocus[:pos], torch.zeros(1, device=device), coefs_DIP_defocus[pos:]))
+
+#WF_0    = GenerateWF(coefs_LO,   astig_diversity)
 
 # Compare PSFs
 fig, ax = plt.subplots(1, 2, figsize=(10, 5))
@@ -308,6 +300,9 @@ print(f'Introduced WF: {WFE_0:.2f}, WFE: {d_WFE:.2f} [nm RMS]')
 
 plt.title('DIP WF coefs estimation (noisy)')
 
+coefs_LO_group1 = npy(coefs_LO[:10]) * 1e9
+coefs_LO_group2 = npy(coefs_LO[10:]) * 1e9
+
 plt.bar(index[:10], coefs_LO_group1, bar_width, label='Random LO coefs')
 plt.bar(index[10:], coefs_LO_group2, bar_width, label='Random petal modes coefs', color='green')
 
@@ -325,4 +320,49 @@ plt.show()
 
 mse = np.mean((npy(coefs_LO)*1e9 - npy(coefs_DIP_defocus)) ** 2)
 print("MSE entre coefs_LO et coefs_DIP_defocus :", mse, '[nm RMS]')
+# %% Plot linearity
+# # Tracer la sortie en fonction de l'entrée
+# plt.plot(entree, sortie, marker='o', linestyle='-')
+
+# # Ajouter des étiquettes et un titre
+# plt.xlabel('Piston petal mode coef [nm]')
+# plt.ylabel('coef estimation [nm]')
+# plt.title('DIP (L1Loss) linearity for piston petal mode')
+
+# # Afficher la grille
+# plt.grid(True)
+
+# # Afficher le graphique
+# plt.show()
+
+#%% PV/petal std
+#to determine which coefficient standard deviation to choose to achieve a peak-to-valley of 800 nm
+LO_dist_law = lambda x, A, B, C: A / cp.exp(B*cp.abs(x)) + C
+N_modes_simulated = Z_basis.nModes
+x = cp.arange(N_modes_simulated)
+PV_distribution = LO_dist_law(x, *[20, 0.2, 10])*0
+PV_distribution[[0,1,10]] = 0
+coeff_piston = 100
+coeff_tilt = 100
+PV_distribution[11:14] = coeff_std
+PV_distribution[14:22] = coeff_tilt
+PV_distribution *= 1e-9 # [nm] -> [m]
+  
+coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)
+coefs_PV = cp.clip(coefs_PV, -500e-9, 500e-9)
+
+zero_diversity = Z_basis.Mode(4) *0
+WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
+PV = np.round(np.max(WF_PV) - np.min(WF_PV))
+
+c_lim = PV
+
+fig = plt.imshow(WF_PV.get(), vmin=-c_lim, vmax=c_lim, cmap='seismic')
+plt.title('Simulated WF')
+plt.axis('off')
+cbar = plt.colorbar(fig)
+cbar.set_label('[nm RMS]')
+plt.show()
+print("PV=", PV, "nm")
+print("coefs", coefs_PV[11:22]*1e9)
 # %%
