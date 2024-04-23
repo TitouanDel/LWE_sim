@@ -95,8 +95,12 @@ def coefs2WF(coefs):
     OPD = (OPD_all).permute([2,0,1])
     return OPD
 
-for k in range(50):
-    print("iteration number:", k)
+WFE_intro = WFE_DIP = WFE_LIFT = []
+
+
+
+for k in range(5):
+    print("iteration number:", k, end='\r')
 
     coefs_LO = cp.random.normal(0, LO_distribution, N_modes_simulated)
     coefs_LO = cp.clip(coefs_LO, -500e-9, 500e-9)
@@ -136,9 +140,11 @@ for k in range(50):
     d_WF  = WF_0 - WF_LIFT
     d_WFE = calc_WFE(d_WF)
     WFE_0 = calc_WFE(WF_0)
+    WFE_intro.append(WFE_0)
 
     c_lim = np.max([np.max(np.abs(WF_0)), np.max(np.abs(WF_LIFT)), np.max(np.abs(d_WF))])
     print("LIFT WFE:", d_WFE)
+    WFE_LIFT.append(d_WFE)
     if d_WFE>1:
         n_lift_failed +=1
     
@@ -165,7 +171,7 @@ for k in range(50):
         #loss = loss_fn( dip(OPD=coefs2WF(coefs_DIP_defocus)), PSF_torch)
         return loss # add whatever regularizer you want here
         
-    verbose = True
+    verbose = False
 
     for i in range(200):
         optimizer.zero_grad()
@@ -188,9 +194,22 @@ for k in range(50):
 
     d_WFE_DIP = calc_WFE(d_WF := WF_0-WF_DIP)
     print("DIP WFE:", d_WFE_DIP)
+    WFE_DIP.append(d_WFE_DIP)
     if d_WFE_DIP>1:
         n_dip_failed +=1
 #%%
 print("LIFT error rate:", n_lift_failed*100/(k+1), "%")
 print("DIP error rate:", n_dip_failed*100/(k+1), "%")
 # %%
+# Tracé des nuages de points
+plt.scatter(WFE_intro, WFE_LIFT, label='LIFT')
+plt.scatter(WFE_intro, WFE_DIP, label='DIP')
+
+# Ajout de légendes et d'étiquettes
+plt.xlabel('WFE_intro')
+plt.ylabel('WFE')
+plt.title('Comparaison entre LIFT et DIP')
+plt.legend()
+
+# Affichage du graphique
+plt.show()

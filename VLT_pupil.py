@@ -90,23 +90,24 @@ def PupilVLT(samples, vangle=[0, 0], petal_modes=False, rotation_angle=0):
                   (( -0.5,  0.5 ),  (-0.75, 0.25)),
                   (( -0.25, 0.75),  (-0.5,  0.5 ))]
 
-        def normalize_petal_mode(petal, coord):
+        def normalize_petal_mode(petal, coord, full_pupil):
             mode = petal.astype('double') * coord
             mode -= mode.min()
             mode /= (mode.max() + mode.min())
             mode -= 0.5
             mode[np.where(petal==False)] = 0.0
             mode[np.where(petal==True)] -= mode[np.where(petal==True)].mean()
-            mode /= mode[np.where(petal==True)].std()
+            # mode /= mode[np.where(petal==True)].std()
+            mode /= mode[np.where(full_pupil==True)].std()
             return mode
 
         tips, tilts  = [], []
-
+  
         for i in range(4):
             xx, yy = np.meshgrid(np.linspace(*limits[i][0],  samples), np.linspace(*limits[i][1], samples))
             xx_rot, yy_rot = rotate(xx, yy, rotation_angle)
-            tips.append(  normalize_petal_mode(resized_petals[i], yy_rot) )
-            tilts.append( normalize_petal_mode(resized_petals[i], xx_rot) )
+            tips.append(  normalize_petal_mode(resized_petals[i], yy_rot, sum(resized_petals)) )
+            tilts.append( normalize_petal_mode(resized_petals[i], xx_rot, sum(resized_petals)) )
 
         return np.dstack([*resized_petals, *tips, *tilts])
 

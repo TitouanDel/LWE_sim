@@ -10,14 +10,18 @@ from warnings import warn
 import torch
 
 import cupy as cp
+from importlib import reload
 
 from LIFT.modules.Telescope import Telescope 
 from LIFT.modules.Detector import Detector
 from LIFT.modules.Source import Source
 from LIFT.modules.Zernike import Zernike
 from LIFT.modules.LIFT import LIFT
-from VLT_pupil import CircPupil, PupilVLT
+import VLT_pupil
+reload(VLT_pupil)
+from VLT_pupil import PupilVLT
 from initialize_VLT import GenerateVLT
+
 
 def npy(x):
     if isinstance(x, cp.ndarray):
@@ -27,7 +31,7 @@ def npy(x):
     else:
         return x
 #%% Initializing optical system
-samples = 200
+samples = 100
 
 vlt_pupil = PupilVLT(samples, vangle=[0, 0], petal_modes=False, rotation_angle=0)
 plt.imshow(vlt_pupil)
@@ -66,15 +70,19 @@ def GenerateWF(coefs, diversity=0.0):
 LO_dist_law = lambda x, A, B, C: A / cp.exp(B*cp.abs(x)) + C
 N_modes_simulated = Z_basis.nModes
 x = cp.arange(N_modes_simulated)
-LO_distribution = LO_dist_law(x, *[70, 0.2, 10])
+LO_distribution = LO_dist_law(x, *[20, 0.2, 10])
 LO_distribution[[0,1,10]] = 0
-coeff_std = 100
-LO_distribution[11:22] = coeff_std
+
+coeff_piston = 250
+coeff_tilt = 60
+LO_distribution[11:14] = coeff_piston
+LO_distribution[14:22] = coeff_tilt
 LO_distribution *= 1e-9 # [nm] -> [m]
+LO_mean = 0
 
 coefs_LO = cp.random.normal(0, LO_distribution, N_modes_simulated)
-coefs_LO = cp.clip(coefs_LO, -500e-9, 500e-9)
-
+coefs_LO[11:14] = cp.clip(coefs_LO[11:14], -700, 700)
+coefs_LO[14:22] = cp.clip(coefs_LO[14:22], -500, 500)
 
 plt.title('Simulated LO coefficients')
 
@@ -127,6 +135,7 @@ estimator = LIFT(vlt, Z_basis, astig_diversity, 30)
 #Choice of PSF to estimate : noiseless or data
 PSF_sim = PSF_noiseless
 
+# modes_LIFT = [15]
 modes_LIFT = [2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # Selected Zernike modal coefficients
 # Note! Sometime, for ML-estimation it is better to exlude an order coincding with the diversity term (e.g. 4th order in this case) to reduce the cross coupling between modes
 
@@ -217,7 +226,7 @@ dip.diversity   = torch.atleast_3d(torch.tensor(astig_diversity)*1e9).to(device)
 dip.modal_basis = torch.tensor(Z_basis.modesFullRes, dtype=torch.float32, device=device)
 
 
-#%%DIP test
+#%% DIP test
 PSF_torch = torch.tensor(PSF_sim/PSF_sim.sum()).float().to(device).unsqueeze(0)
 
 inv_R_n_torch = median_filter(1.0 / R_n.get(), 4) + 1.0
@@ -320,40 +329,32 @@ plt.show()
 
 mse = np.mean((npy(coefs_LO)*1e9 - npy(coefs_DIP_defocus)) ** 2)
 print("MSE entre coefs_LO et coefs_DIP_defocus :", mse, '[nm RMS]')
-# %% Plot linearity
-# # Tracer la sortie en fonction de l'entrée
-# plt.plot(entree, sortie, marker='o', linestyle='-')
 
-# # Ajouter des étiquettes et un titre
-# plt.xlabel('Piston petal mode coef [nm]')
-# plt.ylabel('coef estimation [nm]')
-# plt.title('DIP (L1Loss) linearity for piston petal mode')
-
-# # Afficher la grille
-# plt.grid(True)
-
-# # Afficher le graphique
-# plt.show()
-
-#%% PV/petal std
+#%% WF sim without diversity
 #to determine which coefficient standard deviation to choose to achieve a peak-to-valley of 800 nm
 LO_dist_law = lambda x, A, B, C: A / cp.exp(B*cp.abs(x)) + C
 N_modes_simulated = Z_basis.nModes
 x = cp.arange(N_modes_simulated)
-PV_distribution = LO_dist_law(x, *[20, 0.2, 10])*0
+PV_distribution = LO_dist_law(x, *[1, 0.2, 10])*0
 PV_distribution[[0,1,10]] = 0
-coeff_piston = 100
-coeff_tilt = 100
-PV_distribution[11:14] = coeff_std
+coeff_piston = 300*0
+coeff_tilt = 40
+coeff_ncpa = 8*0
+PV_distribution[2:10] = coeff_ncpa
+PV_distribution[11:14] = coeff_piston
 PV_distribution[14:22] = coeff_tilt
 PV_distribution *= 1e-9 # [nm] -> [m]
-  
+PV_mean = 0
+WFE_mean = 0
+
 coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)
-coefs_PV = cp.clip(coefs_PV, -500e-9, 500e-9)
+coefs_PV[11:14] = cp.clip(coefs_PV[11:14], -700, 700) 
+coefs_PV[14:22] = cp.clip(coefs_PV[14:22], -500, 500)
 
 zero_diversity = Z_basis.Mode(4) *0
 WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
 PV = np.round(np.max(WF_PV) - np.min(WF_PV))
+WFE_PV = calc_WFE(WF_PV)
 
 c_lim = PV
 
@@ -364,5 +365,130 @@ cbar = plt.colorbar(fig)
 cbar.set_label('[nm RMS]')
 plt.show()
 print("PV=", PV, "nm")
-print("coefs", coefs_PV[11:22]*1e9)
+  
+for k in range(1000):
+    coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)
+    coefs_PV = cp.clip(coefs_PV, -500e-9, 500e-9)
+
+    zero_diversity = Z_basis.Mode(4) *0
+    WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
+    PV = np.round(np.max(WF_PV) - np.min(WF_PV))
+    WFE_PV = calc_WFE(WF_PV)
+
+    c_lim = PV
+
+    # fig = plt.imshow(WF_PV.get(), vmin=-c_lim, vmax=c_lim, cmap='seismic')
+    # plt.title('Simulated WF')
+    # plt.axis('off')
+    # cbar = plt.colorbar(fig)
+    # cbar.set_label('[nm RMS]')
+    # plt.show()
+    # print("PV=", PV, "nm")
+    print("WFE=", WFE_PV, "nm")
+    PV_mean +=PV
+    WFE_mean +=WFE_PV
+
+print("PV mean=", PV_mean/(k+1), "nm")
+print("WFE mean", WFE_mean/(k+1), "nm")
+
+
+#print("coefs", coefs_PV[11:22]*1e9)
+# %% Single mode response
+
+single_mode = 1
+Z_basis.modesFullRes = cp.asarray(petal_modes[:,:, single_mode])
+Z_basis.modesFullRes = cp.expand_dims(Z_basis.modesFullRes, axis=-1)
+Z_basis.nModes = 1
+coefs_LO = [-1000.0*1e-9]
+modes_LIFT= modes_DIP = [0]
+coef_sim = [] 
+LIFT_response = []
+DIP_response = []
+
+
+def criterion():
+    # loss = loss_fn( dip(OPD=coefs2WF(coefs_DIP_defocus))*inv_R_n_torch, PSF_torch*inv_R_n_torch)
+    loss = loss_fn( dip(OPD=coefs2WF(coefs_DIP_defocus)), PSF_torch)
+    return loss # add whatever regularizer you want here
+
+K=40
+for k in range(K):
+    coef_sim.append(coefs_LO[0])
+    print('iter.', k, end='\r')
+    # Generate PSF
+    PSF_noiseless = PSFfromCoefs(coefs_LO, astig_diversity)
+    # PSF_noisy_DITs, _ = vlt.det.getFrame(PSF_noiseless, noise=True, integrate=False) # Adding noise to the PSF and generating a sequence of frames
+    PSF_noiseless = npy(PSF_noiseless)
+    # R_n = PSF_noisy_DITs.var(axis=2)    # LIFT flux-weighting matrix
+    # PSF_data = PSF_noisy_DITs.mean(axis=2) # input PSF
+    # PSF_data = cp.array(PSF_data)
+    # R_n = cp.array(R_n)
+    PSF_sim = PSF_noiseless
+    # plt.imshow(npy(PSF_sim))
+    # plt.show()
+
+    # LIFT
+    estimator = LIFT(vlt, Z_basis, astig_diversity, 30)
+    coefs_mean = cp.zeros([max(modes_LIFT)+1]) # Initial guess for the mean value of the modal coefficients (for MAP estimator)
+    coefs_var  = LO_distribution**2 # Initial guess for the variance of the modal coefficients (for MAP estimator)
+    coefs_LIFT,  PSF_LIFT, _  = estimator.Reconstruct(PSF_sim, R_n=None, mode_ids=modes_LIFT, optimize_norm='sum')
+    LIFT_response.append(coefs_LIFT[0])
+
+    # DIP
+    dip = DIP(vlt, device, 'sum')
+    dip.diversity   = torch.atleast_3d(torch.tensor(astig_diversity)*1e9).to(device)
+    dip.modal_basis = torch.tensor(Z_basis.modesFullRes, dtype=torch.float32, device=device)
+    PSF_torch = torch.tensor(PSF_sim/PSF_sim.sum()).float().to(device).unsqueeze(0)
+    # inv_R_n_torch = median_filter(1.0 / R_n.get(), 4) + 1.0
+    # inv_R_n_torch = torch.tensor(inv_R_n_torch).float().to(device).unsqueeze(0)
+    num_modes_DIP = len(modes_DIP)
+    coefs_DIP_defocus = torch.zeros(num_modes_DIP, requires_grad=True, device=device)
+    loss_fn = nn.L1Loss(reduction='sum')
+    early_stopping = EarlyStopping(patience=5, tolerance=0.00001, relative=False)
+    optimizer = optim.LBFGS([coefs_DIP_defocus], history_size=20, max_iter=5, line_search_fn="strong_wolfe")    
+    verbose = False
+
+    for i in range(200):
+        optimizer.zero_grad()
+        loss = criterion() 
+        early_stopping(loss)
+        loss.backward()
+        optimizer.step( lambda: criterion() )
+        if verbose: print(f'Loss (iter. {i}/200): {loss.item()}', end='\r')
+
+        if early_stopping.stop:
+            if verbose: print('Stopped at it.', i, 'with loss:', loss.item())
+            break
+    
+    DIP_response.append(coefs_DIP_defocus.item()*1e-9)
+    with torch.no_grad():       
+        PSF_DIP = npy( dip(OPD = (WF_DIP:=coefs2WF(coefs_DIP_defocus))).squeeze() )
+    # plt.imshow(npy(PSF_DIP))
+    # plt.show()
+    coefs_LO[0] += 2e-6/K
+
+fig, ax = plt.subplots()
+ax.plot(coef_sim, LIFT_response, linestyle='-')
+ax.plot(coef_sim, coef_sim, color='gray', linestyle='--', label='y=x')
+ax.set_xlabel(f'Petal mode {single_mode} coef [m]')
+ax.set_ylabel('coef estimation [m]')
+ax.set_title(f'LIFT linearity for petal mode {single_mode}')
+ax.grid(True)
+for x, y in zip(coef_sim, LIFT_response):
+    plt.text(x, y, f'{int(x*1e9)}', fontsize=6, ha='right', va='bottom')
+ax.set_ylim(-1e-6, 1e-6)
+plt.show()
+
+DIP_response = np.clip(DIP_response, -1000e-9, 900e-9)
+fig, ax = plt.subplots()
+ax.plot(coef_sim, DIP_response, linestyle='-')
+ax.plot(coef_sim, coef_sim, color='gray', linestyle='--', label='y=x')
+ax.set_xlabel(f'Petal mode {single_mode} coef [m]')
+ax.set_ylabel('coef estimation [m]')
+ax.set_title(f'DIP linearity for petal mode {single_mode}')
+ax.grid(True)
+for x, y in zip(coef_sim, DIP_response):
+    plt.text(x, y, f'{int(x*1e9)}', fontsize=6, ha='right', va='bottom')
+ax.set_ylim(-1e-6, 1e-6)
+plt.show()
 # %%
