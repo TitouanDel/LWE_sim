@@ -31,7 +31,7 @@ def npy(x):
     else:
         return x
 #%% Initializing optical system
-samples = 100
+samples = 80
 
 vlt_pupil = PupilVLT(samples, vangle=[0, 0], petal_modes=False, rotation_angle=0)
 plt.imshow(vlt_pupil)
@@ -39,42 +39,46 @@ plt.show()
 petal_modes = PupilVLT(samples, vangle=[0, 0], petal_modes=True, rotation_angle=0)
 
 # Display petal modes
-fig, axes = plt.subplots(3, 4, figsize=(12, 9))
+# fig, axes = plt.subplots(3, 4, figsize=(12, 9))
 
-for i, ax in enumerate(axes.flat):
-    idx = i % 12
+# for i, ax in enumerate(axes.flat):
+#     idx = i % 12
     
-    ax.imshow(petal_modes[:, :, idx], cmap='gray')
-    ax.set_title(f'Image {idx+1}')
-    ax.axis('off')
+#     ax.imshow(petal_modes[:, :, idx], cmap='gray')
+#     ax.set_title(f'Image {idx+1}')
+#     ax.axis('off')
 
-plt.tight_layout()
-plt.show()
+# plt.tight_layout()
+# plt.show()
 
-vlt = GenerateVLT(img_resolution=41, pupil=vlt_pupil, source_spectrum= [('H', 15)], f=8*64, reflectivity=0.385, sampling_time=0.1/20.0, num_samples=10*20, gpu=True)
+vlt = GenerateVLT(img_resolution=41, pupil=vlt_pupil, source_spectrum= [('H', 16)], f=8*64, reflectivity=0.385, sampling_time=0.1/20.0, num_samples=10*20, gpu=True)
 
 #%% Initialize modal basis
 
-modes_num_Z = 10
-Z_basis = Zernike(modes_num_Z)
+modes_num_Z = 22
+div_basis = Zernike(modes_num_Z)
+div_basis.computeZernike(vlt)
+astig_shift = 400e-9 #[m]
+astig_diversity = div_basis.Mode(4) * astig_shift
+
+Z_basis = Zernike(10)
 Z_basis.computeZernike(vlt)
 Z_basis.modesFullRes = cp.concatenate((Z_basis.modesFullRes, cp.asarray(petal_modes)), axis=2)
 Z_basis.nModes += 12
 
-astig_shift = 200e-9 #[m]
-astig_diversity = Z_basis.Mode(4) * astig_shift
+
 
 def GenerateWF(coefs, diversity=0.0):
     return (Z_basis.wavefrontFromModes(vlt, coefs)+ diversity) * 1e9 # [nm]
-#%% Generating PSF
+#%% Generating coefs
 LO_dist_law = lambda x, A, B, C: A / cp.exp(B*cp.abs(x)) + C
 N_modes_simulated = Z_basis.nModes
 x = cp.arange(N_modes_simulated)
 LO_distribution = LO_dist_law(x, *[20, 0.2, 10])
-LO_distribution[[0,1,10]] = 0
-
-coeff_piston = 250
-coeff_tilt = 60
+LO_distribution[0:11]=0
+LO_distribution[2:10]=20
+coeff_piston = 150
+coeff_tilt = 55
 LO_distribution[11:14] = coeff_piston
 LO_distribution[14:22] = coeff_tilt
 LO_distribution *= 1e-9 # [nm] -> [m]
@@ -97,6 +101,7 @@ plt.ylabel('Coefficient value [nm RMS]')
 plt.xlabel('Mode number')
 plt.show()
 
+#%% Generating PSF
 def PSFfromCoefs(coefs, diversity):
     vlt.src.OPD = Z_basis.wavefrontFromModes(vlt,coefs) + diversity # Don't forget to add the diversity term
     PSF = vlt.ComputePSF()
@@ -133,9 +138,9 @@ plt.show()
 estimator = LIFT(vlt, Z_basis, astig_diversity, 30)
 
 #Choice of PSF to estimate : noiseless or data
-PSF_sim = PSF_noiseless
+PSF_sim = PSF_data
 
-# modes_LIFT = [15]
+# modes_LIFT = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 modes_LIFT = [2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] # Selected Zernike modal coefficients
 # Note! Sometime, for ML-estimation it is better to exlude an order coincding with the diversity term (e.g. 4th order in this case) to reduce the cross coupling between modes
 
@@ -337,8 +342,8 @@ N_modes_simulated = Z_basis.nModes
 x = cp.arange(N_modes_simulated)
 PV_distribution = LO_dist_law(x, *[1, 0.2, 10])*0
 PV_distribution[[0,1,10]] = 0
-coeff_piston = 300*0
-coeff_tilt = 40
+coeff_piston = 150
+coeff_tilt = 55
 coeff_ncpa = 8*0
 PV_distribution[2:10] = coeff_ncpa
 PV_distribution[11:14] = coeff_piston
@@ -347,28 +352,30 @@ PV_distribution *= 1e-9 # [nm] -> [m]
 PV_mean = 0
 WFE_mean = 0
 
-coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)
-coefs_PV[11:14] = cp.clip(coefs_PV[11:14], -700, 700) 
-coefs_PV[14:22] = cp.clip(coefs_PV[14:22], -500, 500)
+# coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)*0
+# coefs_PV[17] = 200
+# coefs_PV[11:14] = cp.clip(coefs_PV[11:14], -700e-9, 700e-9) 
+# coefs_PV[14:22] = cp.clip(coefs_PV[14:22], -300e-9, 300e-9)
 
-zero_diversity = Z_basis.Mode(4) *0
-WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
-PV = np.round(np.max(WF_PV) - np.min(WF_PV))
-WFE_PV = calc_WFE(WF_PV)
+# zero_diversity = Z_basis.Mode(4) *0
+# WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
+# PV = np.round(np.max(WF_PV) - np.min(WF_PV))
+# WFE_PV = calc_WFE(WF_PV)
 
-c_lim = PV
+# c_lim = PV
 
-fig = plt.imshow(WF_PV.get(), vmin=-c_lim, vmax=c_lim, cmap='seismic')
-plt.title('Simulated WF')
-plt.axis('off')
-cbar = plt.colorbar(fig)
-cbar.set_label('[nm RMS]')
-plt.show()
-print("PV=", PV, "nm")
+# fig = plt.imshow(WF_PV.get(), vmin=-c_lim, vmax=c_lim, cmap='seismic')
+# plt.title('Simulated WF')
+# plt.axis('off')
+# cbar = plt.colorbar(fig)
+# cbar.set_label('[nm RMS]')
+# plt.show()
+# print("PV=", PV, "nm")
   
 for k in range(1000):
     coefs_PV = cp.random.normal(0, PV_distribution, N_modes_simulated)
-    coefs_PV = cp.clip(coefs_PV, -500e-9, 500e-9)
+    coefs_PV[11:14] = cp.clip(coefs_PV[11:14], -700e-9, 700e-9) 
+    coefs_PV[14:22] = cp.clip(coefs_PV[14:22], -300e-9, 300e-9)
 
     zero_diversity = Z_basis.Mode(4) *0
     WF_PV    = GenerateWF(coefs_PV,   zero_diversity)
@@ -378,13 +385,14 @@ for k in range(1000):
     c_lim = PV
 
     # fig = plt.imshow(WF_PV.get(), vmin=-c_lim, vmax=c_lim, cmap='seismic')
+
     # plt.title('Simulated WF')
     # plt.axis('off')
     # cbar = plt.colorbar(fig)
     # cbar.set_label('[nm RMS]')
     # plt.show()
     # print("PV=", PV, "nm")
-    print("WFE=", WFE_PV, "nm")
+    # print("WFE=", WFE_PV, "nm")
     PV_mean +=PV
     WFE_mean +=WFE_PV
 
@@ -395,7 +403,7 @@ print("WFE mean", WFE_mean/(k+1), "nm")
 #print("coefs", coefs_PV[11:22]*1e9)
 # %% Single mode response
 
-single_mode = 1
+single_mode = 9
 Z_basis.modesFullRes = cp.asarray(petal_modes[:,:, single_mode])
 Z_basis.modesFullRes = cp.expand_dims(Z_basis.modesFullRes, axis=-1)
 Z_basis.nModes = 1
@@ -492,3 +500,4 @@ for x, y in zip(coef_sim, DIP_response):
 ax.set_ylim(-1e-6, 1e-6)
 plt.show()
 # %%
+ 
